@@ -57,6 +57,7 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
         INDEX (`item_id`)) ENGINE = InnoDB";
         $db->query($sql);
 
+        set_option('geolocation_google_api_key', '');
         set_option('geolocation_default_latitude', '38');
         set_option('geolocation_default_longitude', '-77');
         set_option('geolocation_default_zoom_level', '5');
@@ -70,6 +71,7 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
     public function hookUninstall()
     {
         // Delete the plugin options
+        delete_option('geolocation_google_api_key');
         delete_option('geolocation_default_latitude');
         delete_option('geolocation_default_longitude');
         delete_option('geolocation_default_zoom_level');
@@ -121,6 +123,7 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
     public function hookConfig($args)
     {
         // Use the form to set a bunch of default options in the db
+        set_option('geolocation_google_api_key', $_POST['google_api_key']);
         set_option('geolocation_default_latitude', $_POST['default_latitude']);
         set_option('geolocation_default_longitude', $_POST['default_longitude']);
         set_option('geolocation_default_zoom_level', $_POST['default_zoomlevel']);
@@ -170,15 +173,23 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
 
     public function hookAdminHead($args)
     {
-        queue_css_file('geolocation-marker');
-        queue_js_url("//maps.google.com/maps/api/js?language=".get_html_lang()); # sensor=false&
+        queue_css_file('geolocation-aux');
+        queue_css_file('geolocation-items-map');
+        queue_css_file('jquery-ui');
+        $key = urlencode(get_option('geolocation_google_api_key'));
+        if ($key) { $key = "key=".$key."&"; }
+        queue_js_url("https://maps.google.com/maps/api/js?".$key."language=".get_html_lang()); # sensor=false&
         queue_js_file('map');
     }
 
     public function hookPublicHead($args)
     {
-        queue_css_file('geolocation-marker');
-        queue_js_url("//maps.google.com/maps/api/js?language=".get_html_lang()); # sensor=false&
+        queue_css_file('geolocation-aux');
+        queue_css_file('geolocation-items-map');
+        queue_css_file('jquery-ui');
+        $key = urlencode(get_option('geolocation_google_api_key'));
+        if ($key) { $key = "key=".$key."&"; }
+        queue_js_url("https://maps.google.com/maps/api/js?".$key."language=".get_html_lang()); # sensor=false&
         queue_js_file('map');
     }
 
@@ -243,7 +254,20 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
                   . '<h4>' . __('Geolocation') . '</h4>'
                   . '<div style="margin: 14px 0">'
                   . $view->itemGoogleMap($item, '100%', '270px' )
-                  . '</div></div>';
+                  . '</div>';
+
+                  $overlays = SELF::GeolocationConvertOverlayJsonForUse();
+                  if ($overlays) {
+                    $overlay = $location["overlay"];
+                    $html .= '<div id="geoloc_ovl_options">'.
+                    '<strong>'.__("Select Map Overlay:").'</strong>'.
+                    get_view()->formSelect('geolocation[overlay]', $overlay, null, $overlays["jsSelect"] ).
+                    '<span id="ovlOpacSlider"></span>'.
+                    '</div>';
+                  }
+
+                  $html .= '</div>';
+
             echo $html;
         }
     }
@@ -260,6 +284,17 @@ class GeolocationPlugin extends Omeka_Plugin_AbstractPlugin
             $html = "<div id='geolocation'>";
             $html .= '<h2>Geolocation</h2>';
             $html .= $view->itemGoogleMap($item, $width, $height);
+
+            $overlays = SELF::GeolocationConvertOverlayJsonForUse();
+            if ($overlays) {
+              $overlay = $location["overlay"];
+              $html .= '<div id="geoloc_ovl_options">'.
+              '<strong>'.__("Select Map Overlay:").'</strong>'.
+              get_view()->formSelect('geolocation[overlay]', $overlay, null, $overlays["jsSelect"] ).
+              '<span id="ovlOpacSlider"></span>'.
+              '</div>';
+            }
+
             $html .= "</div>";
             echo $html;
         }
@@ -486,7 +521,7 @@ SQL
         );
         return $layouts;
     }
-    
+
     public function filterApiImportOmekaAdapters($adapters, $args)
     {
         $geolocationAdapter = new ApiImport_ResponseAdapter_Omeka_GenericAdapter(null, $args['endpointUri'], 'Location');
@@ -540,7 +575,7 @@ SQL
 
         if (isset($args['tags'])) {
             $options['params']['tags'] = $args['tags'];
-        }        
+        }
 
         $pattern = '#^[0-9]*(px|%)$#';
 
@@ -580,7 +615,7 @@ SQL
             $post = $_POST;
         }
 
-        $usePost = !empty($post) 
+        $usePost = !empty($post)
                     && !empty($post['geolocation'])
                     && $post['geolocation']['longitude'] != ''
                     && $post['geolocation']['latitude'] != '';
@@ -606,7 +641,7 @@ SQL
 				$overlays = SELF::GeolocationConvertOverlayJsonForUse();
 
         $html .= '<div id="omeka-map-form" style="width: 100%; height: 300px"></div>';
-        
+
         $html .= '<div class="field">'.
                    '<table><tbody>'.
                     '<tr>'.
@@ -629,9 +664,10 @@ SQL
 				if ($overlays) {
 					$html .= '<tr>'.
                      '<th>' . __("Select Map Overlay:") . '</th>'.
-                     '<td colspan="2">'.
+                     '<td>'.
                        get_view()->formSelect('geolocation[overlay]', $overlay, null, $overlays["jsSelect"] ).
                      '</td>'.
+                     '<td><span id="ovlOpacSlider"></span></td>'.
                    '</tr>';
 				}
 
@@ -724,6 +760,7 @@ SQL
 
   		$regExIdx = "^\d+$"; // decimal number of at least one digit
   		$regExLatLng = "^(?:\+|-)?\d+(?:.\d+)?$"; // (+|-)1234(.1234) as latitude or longitude coordinate
+  		$regExProtoUrl = "^[a-z]+(?:s)?://.*$"; // image URL starts with a protocol, like http://, https:// etc.
 
   		foreach($mapOverlays as $mapOverlay) {
 
@@ -750,6 +787,12 @@ SQL
   			} else { break; }
 
   			if ( (floatval($latNorth) <= floatval($latSouth)) or (floatval($lngWest) >= floatval($lngEast)) ) { break; }
+
+        if ( !preg_match( "($regExProtoUrl)",$imgUrl) ) {
+          $imgUrl = ltrim($imgUrl, "/");
+          $imgUrl=public_url("mapoverlays/$imgUrl");
+          $imgUrl = $_SERVER["REQUEST_SCHEME"]."://".$_SERVER["HTTP_HOST"].$imgUrl;
+        }
 
   			$result[$idx] = array( "identifier" => $identifier,
   															"imgUrl" => $imgUrl,
